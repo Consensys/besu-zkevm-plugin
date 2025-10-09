@@ -1,0 +1,330 @@
+import groovy.transform.Memoized
+import net.ltgt.gradle.errorprone.CheckSeverity
+
+/*
+ * Copyright ConsenSys 2023
+ *]
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+buildscript {
+    repositories {
+        maven {
+            url "https://hyperledger.jfrog.io/artifactory/besu-maven/"
+            content { includeGroupByRegex('org\\.hyperledger\\.besu\\..*')}
+        }
+        mavenCentral()
+        maven {
+            url "https://artifacts.consensys.net/public/maven/maven/"
+            content { includeGroupByRegex('tech\\.pegasys\\..*')}
+        }
+        mavenLocal()
+    }
+    dependencies {
+        classpath 'tech.pegasys.internal.license.reporter:license-reporter:1.1.1'
+    }
+}
+
+plugins {
+    id 'com.diffplug.spotless' version '6.21.0'
+    id 'com.github.ben-manes.versions' version '0.46.0'
+    id 'com.github.hierynomus.license' version '0.16.1'
+    id 'io.spring.dependency-management' version '1.1.0'
+    id 'com.github.jk1.dependency-license-report' version '2.1'
+    id 'net.ltgt.errorprone' version '3.0.1' apply false
+    id 'com.github.johnrengelman.shadow' version '7.1.2'
+    id 'java'
+    id 'java-library'
+}
+
+
+apply plugin: 'java-library'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'net.ltgt.errorprone'
+apply plugin: 'jacoco'
+apply from: "${rootDir}/gradle/versions.gradle"
+apply from: "${rootDir}/gradle/check-licenses.gradle"
+
+group = 'net.consensys.stateless.besu.plugin'
+//version = '0.1.0'
+version = project.hasProperty('releaseVersion') ? project.getProperty('releaseVersion') : 'snapshot'
+
+sourceCompatibility = JavaVersion.VERSION_21
+targetCompatibility = JavaVersion.VERSION_21
+
+defaultTasks 'build', 'checkLicenses', 'javadoc', 'plugin'
+
+repositories {
+    maven {
+        url "https://hyperledger.jfrog.io/artifactory/besu-maven/"
+        content { includeGroupByRegex('org\\.hyperledger\\.besu\\..*')}
+    }
+    mavenCentral()
+    maven {
+        url "https://artifacts.consensys.net/public/maven/maven/"
+        content { includeGroupByRegex('tech\\.pegasys($|\\..*)')}
+    }
+    maven {
+        url "https://dl.cloudsmith.io/public/libp2p/jvm-libp2p/maven/"
+        content { includeGroupByRegex('io\\.libp2p($|\\..*)') }
+    }
+    maven {
+        url "https://hyperledger.jfrog.io/artifactory/besu-maven/"
+        content { includeGroupByRegex('org\\.hyperledger\\.besu($|\\..*)') }
+    }
+    mavenLocal()
+
+}
+
+apply plugin: 'com.diffplug.spotless'
+spotless {
+    java {
+        // This path needs to be relative to each project
+        target fileTree('.') {
+            include '**/*.java'
+            exclude '**/.gradle/**'
+            exclude '**/resources'
+            exclude '**/src/*/generated'
+            exclude '**/src/*/generated_tests'
+            exclude '**/build/**'
+        }
+        removeUnusedImports()
+        googleJavaFormat('1.17.0')
+        importOrder 'net.consensys', 'java', ''
+        trimTrailingWhitespace()
+        endWithNewline()
+        licenseHeaderFile "${rootDir}/gradle/spotless.java.license"
+    }
+}
+
+tasks.withType(JavaCompile) {
+    options.compilerArgs += [
+            '-Xlint:unchecked',
+            '-Xlint:cast',
+            '-Xlint:rawtypes',
+            '-Xlint:overloads',
+            '-Xlint:divzero',
+            '-Xlint:finally',
+            '-Xlint:static',
+            '-Werror',
+    ]
+    options.forkOptions.jvmArgs += [
+            '--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED',
+            '--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED',
+            '--add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED'
+    ]
+
+
+    options.errorprone {
+        excludedPaths = '.*/generated/*.*'
+        disableWarningsInGeneratedCode = true
+        // Our equals need to be symmetric, this checker doesn't respect that.
+        check('EqualsGetClass', CheckSeverity.OFF)
+        // We like to use futures with no return values.
+        check('FutureReturnValueIgnored', CheckSeverity.OFF)
+        // We use the JSR-305 annotations instead of the Google annotations.
+        check('ImmutableEnumChecker', CheckSeverity.OFF)
+        // This is a style check instead of an error-prone pattern.
+        check('UnnecessaryParentheses', CheckSeverity.OFF)
+
+        // This check is broken in Java 12.  See https://github.com/google/error-prone/issues/1257
+        if (JavaVersion.current() == JavaVersion.VERSION_12) {
+            check('Finally', CheckSeverity.OFF)
+        }
+        // This check is broken after Java 12.  See https://github.com/google/error-prone/issues/1352
+        if (JavaVersion.current() > JavaVersion.VERSION_12) {
+            check('TypeParameterUnusedInFormals', CheckSeverity.OFF)
+        }
+
+        check('FieldCanBeFinal', CheckSeverity.WARN)
+        check('InsecureCryptoUsage', CheckSeverity.WARN)
+        check('WildcardImport', CheckSeverity.WARN)
+    }
+
+    options.encoding = 'UTF-8'
+}
+
+sourceSets {
+    testSupport {
+        java {
+            srcDir 'src/testSupport/java'
+        }
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    testSupportImplementation
+    testSupportRuntimeOnly
+
+    all {
+        // transitive versions conflict new Besu coordinates
+        exclude group: 'org.hyperledger.besu.internal', module: 'dsl'
+        exclude group: 'org.hyperledger.besu.internal', module: 'besu'
+        exclude group: 'org.hyperledger.besu.internal', module: 'config'
+        exclude group: 'org.hyperledger.besu.internal', module: 'clique'
+        exclude group: 'org.hyperledger.besu.internal', module: 'common'
+        exclude group: 'org.hyperledger.besu.internal', module: 'ibft'
+        exclude group: 'org.hyperledger.besu.internal', module: 'ibftlegacy'
+        exclude group: 'org.hyperledger.besu.internal', module: 'merge'
+        exclude group: 'org.hyperledger.besu.internal', module: 'qbft'
+        exclude group: 'org.hyperledger.besu.internal', module: 'qbft-core'
+        exclude group: 'org.hyperledger.besu.internal', module: 'algorithms'
+        exclude group: 'org.hyperledger.besu.internal', module: 'services'
+        exclude group: 'org.hyperledger.besu.internal', module: 'api'
+        exclude group: 'org.hyperledger.besu.internal', module: 'blockcreation'
+        exclude group: 'org.hyperledger.besu.internal', module: 'core'
+        exclude group: 'org.hyperledger.besu.internal', module: 'eth'
+        exclude group: 'org.hyperledger.besu.internal', module: 'p2p'
+        exclude group: 'org.hyperledger.besu.internal', module: 'permissioning'
+        exclude group: 'org.hyperledger.besu.internal', module: 'referencetests'
+        exclude group: 'org.hyperledger.besu.internal', module: 'rlp'
+        exclude group: 'org.hyperledger.besu.internal', module: 'trie'
+        exclude group: 'org.hyperledger.besu', module: 'evm'
+        exclude group: 'org.hyperledger.besu.internal', module: 'metrics-core'
+        exclude group: 'org.hyperledger.besu', module: 'plugin-api'
+        exclude group: 'org.hyperledger.besu.internal', module: 'testutil'
+        exclude group: 'org.hyperledger.besu.internal', module: 'util'
+        exclude group: 'org.hyperledger.besu.internal', module: 'nat'
+        exclude group: 'org.hyperledger.besu.internal', module: 'tasks'
+        exclude group: 'org.hyperledger.besu.internal', module: 'pipeline'
+        exclude group: 'org.hyperledger.besu.internal', module: 'kvstore'
+        exclude group: 'org.hyperledger.besu.internal', module: 'enclave'
+    }
+}
+
+dependencies {
+    testImplementation sourceSets.testSupport.output
+
+    // annotationProcessor generates the file META-INF/services/org.hyperledger.besu.plugin.BesuPlugin
+    annotationProcessor 'com.google.auto.service:auto-service'
+    errorprone("com.google.errorprone:error_prone_core")
+
+    // Dependencies provided by BESU at runtime
+    compileOnly 'com.google.auto.service:auto-service-annotations'
+    compileOnly 'com.google.guava:guava'
+    compileOnly 'org.slf4j:slf4j-api'
+    compileOnly 'info.picocli:picocli'
+    implementation('io.vertx:vertx-web-client') { transitive = false }
+    implementation('io.vertx:vertx-uri-template') { transitive = false }
+    compileOnly 'io.vertx:vertx-web'
+    compileOnly 'org.apache.logging.log4j:log4j-slf4j2-impl'
+    compileOnly 'org.apache.logging.log4j:log4j-core'
+    compileOnly 'com.fasterxml.jackson.core:jackson-databind'
+    compileOnly 'com.fasterxml.jackson.core:jackson-annotations'
+    compileOnly 'org.hyperledger.besu.internal:besu-ethereum-rlp'
+    compileOnly 'org.hyperledger.besu:besu-plugin-api'
+    compileOnly 'org.hyperledger.besu:besu-datatypes'
+    compileOnly 'org.hyperledger.besu.internal:besu-ethereum-core'
+    compileOnly 'org.hyperledger.besu.internal:besu-ethereum-api'
+    compileOnly 'org.hyperledger.besu:besu-evm'
+
+    testImplementation 'io.vertx:vertx-web'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'
+    testImplementation 'com.fasterxml.jackson.core:jackson-annotations'
+    testImplementation 'org.slf4j:slf4j-api'
+    testImplementation 'org.apache.logging.log4j:log4j-slf4j2-impl'
+    testImplementation 'org.apache.logging.log4j:log4j-core'
+    testImplementation 'org.hyperledger.besu.internal:besu-ethereum-rlp'
+    testImplementation 'org.hyperledger.besu:besu-plugin-api'
+    testImplementation 'org.hyperledger.besu:besu-datatypes'
+    testImplementation "org.hyperledger.besu.internal:besu-testutil"
+    testImplementation "org.hyperledger.besu.internal:besu-crypto-algorithms"
+    testImplementation 'org.hyperledger.besu.internal:besu-ethereum-core'
+    testImplementation 'org.hyperledger.besu:besu-evm'
+    testImplementation 'org.assertj:assertj-core'
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params'
+    testImplementation 'org.mockito:mockito-core'
+    testImplementation 'org.mockito:mockito-junit-jupiter'
+    testImplementation 'io.vertx:vertx-junit5'
+    testImplementation 'com.google.guava:guava'
+
+    // pull in testSupport
+    testImplementation "org.hyperledger.besu.internal:besu-ethereum-core:${besuVersion}:test-support@jar"
+}
+
+apply plugin: 'java'
+
+jar {
+    archiveBaseName = 'besu-zkevm-plugin'
+
+    manifest {
+        attributes(
+                'Specification-Title': archiveBaseName.get(),
+                'Specification-Version': rootProject.version,
+                'Implementation-Title': archiveBaseName.get(),
+                'Implementation-Version': calculateVersion()
+        )
+    }
+
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+    duplicatesStrategy(DuplicatesStrategy.INCLUDE)
+}
+
+test {
+    useJUnitPlatform()
+}
+
+task testSupportJar(type: Jar) {
+    archiveClassifier.set("test-support")
+    from sourceSets.testSupport.output
+    description = "Packages the test implementation classes"
+    group = "build"
+}
+build.dependsOn(testSupportJar)
+
+task plugin(dependsOn: 'jar') {
+    group 'build'
+    description 'Alias for the jar task'
+}
+
+
+@Memoized
+def calculateVersion() {
+    String version = rootProject.version
+    if (version.endsWith("-SNAPSHOT")) {
+        version = version.replace("-SNAPSHOT", "-dev-" + getCheckedOutGitCommitHash())
+    }
+    return version
+}
+
+def getCheckedOutGitCommitHash(length = 8) {
+    try {
+        def gitFolder = "$projectDir/.git/"
+        if (!file(gitFolder).isDirectory()) {
+            // We are in a submodule.  The file's contents are `gitdir: <gitFolder>\n`.
+            // Read the file, cut off the front, and trim the whitespace.
+            gitFolder = file(gitFolder).text.substring(length).trim() + "/"
+        }
+        def takeFromHash = length
+        /*
+         * '.git/HEAD' contains either
+         *      in case of detached head: the currently checked out commit hash
+         *      otherwise: a reference to a file containing the current commit hash
+         */
+        def head = new File(gitFolder + "HEAD").text.split(":") // .git/HEAD
+        def isCommit = head.length == 1 // e5a7c79edabbf7dd39888442df081b1c9d8e88fd
+
+        if (isCommit) return head[0].trim().take(takeFromHash) // e5a7c79edabb
+
+        def refHead = new File(gitFolder + head[1].trim()) // .git/refs/heads/master
+        refHead.text.trim().take takeFromHash
+    } catch (Exception e) {
+        logger.warn('Could not calculate git commit, using "xxxxxxxx" (run with --info for stacktrace)')
+        logger.info('Error retrieving git commit', e)
+        return "xxxxxxxx"
+    }
+}
