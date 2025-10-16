@@ -78,22 +78,30 @@ public class DebugExecutionWitnessServer implements PluginRpcMethod {
 
     final Optional<BlockHeader> maybeBlockHeader =
         blockchainService.getBlockHeaderByHash(blockHash);
-    final Optional<BonsaiWorldState> maybeWorldView =
-        worldStateService.getWorldView(blockHash).map(BonsaiWorldState.class::cast);
+    if (maybeBlockHeader.isPresent()) {
+      final Optional<BlockHeader> maybeParentBlockHeader =
+          blockchainService.getBlockHeaderByHash(maybeBlockHeader.get().getParentHash());
+      if (maybeParentBlockHeader.isPresent()) {
+        final Optional<BonsaiWorldState> maybeWorldView =
+            worldStateService
+                .getWorldView(maybeParentBlockHeader.get().getBlockHash())
+                .map(BonsaiWorldState.class::cast);
+        if (maybeWorldView.isPresent()) {
+          final ExecutionWitnessService service =
+              new ExecutionWitnessService(blockchainService, rlpConverterService);
 
-    if (maybeBlockHeader.isEmpty() || maybeWorldView.isEmpty()) {
-      return null;
+          List<String> trieNodes =
+              service.buildTrieNodes(
+                  maybeBlockHeader.get(), trieLogLayer.get(), maybeWorldView.get());
+          List<String> keys = service.buildKeys(trieLogLayer.get());
+          List<String> codes = service.buildCode(trieLogLayer.get(), maybeWorldView.get());
+          List<String> headers = service.buildHeaders(maybeParentBlockHeader.get());
+
+          return new ExecutionWitnessJsonTest(trieNodes, keys, codes, headers);
+        }
+      }
     }
-
-    final ExecutionWitnessService service =
-        new ExecutionWitnessService(blockchainService, rlpConverterService);
-
-    List<String> trieNodes = service.buildTrieNodes(trieLogLayer.get(), maybeWorldView.get());
-    List<String> keys = service.buildKeys(trieLogLayer.get());
-    List<String> codes = service.buildCode(trieLogLayer.get(), maybeWorldView.get());
-    List<String> headers = service.buildHeaders(maybeBlockHeader.get());
-
-    return new ExecutionWitnessJsonTest(trieNodes, keys, codes, headers);
+    return null;
   }
 
   private boolean areServicesReady() {

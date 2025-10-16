@@ -14,9 +14,12 @@
  */
 package net.consensys.stateless.service;
 
+import static org.hyperledger.besu.ethereum.core.BlockHeader.convertPluginBlockHeader;
+
+import net.consensys.stateless.storage.BonsaiWorldStateWitnessStorage;
+
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import org.apache.tuweni.bytes.Bytes;
@@ -24,9 +27,15 @@ import org.apache.tuweni.units.bigints.UInt256;
 import org.hyperledger.besu.datatypes.AccountValue;
 import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.datatypes.Hash;
-import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.cache.CodeCache;
+import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.cache.NoOpBonsaiCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.cache.NoopBonsaiCachedMerkleTrieLoader;
 import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.worldview.BonsaiWorldState;
-import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.worldview.BonsaiWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.trie.pathbased.common.trielog.NoOpTrieLogManager;
+import org.hyperledger.besu.ethereum.trie.pathbased.common.worldview.WorldStateConfig;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
 import org.hyperledger.besu.plugin.data.BlockHeader;
 import org.hyperledger.besu.plugin.services.BlockchainService;
 import org.hyperledger.besu.plugin.services.rlp.RlpConverterService;
@@ -43,39 +52,46 @@ public class ExecutionWitnessService {
     this.rlpConverterService = rlpConverterService;
   }
 
-  public List<String> buildTrieNodes(final TrieLog trieLog, final BonsaiWorldState worldView) {
-    var proofProvider =
-        new WorldStateProofProvider(
-            new WorldStateStorageCoordinator(worldView.getWorldStateStorage()));
+  public List<String> buildTrieNodes(
+      final BlockHeader blockHeader, final TrieLog trieLog, final BonsaiWorldState worldView) {
 
-    var resultSet = ConcurrentHashMap.<String>newKeySet();
-    trieLog.getAccountChanges().entrySet().parallelStream()
+    final BonsaiWorldStateWitnessStorage bonsaiWorldStateLayerStorage =
+        new BonsaiWorldStateWitnessStorage(worldView.getWorldStateStorage());
+    final CodeCache codeCache = new CodeCache();
+    final BonsaiWorldState worldState =
+        new BonsaiWorldState(
+            bonsaiWorldStateLayerStorage,
+            new NoopBonsaiCachedMerkleTrieLoader(),
+            new NoOpBonsaiCachedWorldStorageManager(
+                bonsaiWorldStateLayerStorage, EvmConfiguration.DEFAULT, codeCache),
+            new NoOpTrieLogManager(),
+            worldView.getAccumulator().getEvmConfiguration(),
+            WorldStateConfig.newBuilder().build(),
+            codeCache);
+    final BonsaiWorldStateUpdateAccumulator updater =
+        (BonsaiWorldStateUpdateAccumulator) worldState.updater();
+    // force read everything
+    trieLog
+        .getAccountChanges()
         .forEach(
-            entry -> {
-              Address address = entry.getKey();
-              var prior = entry.getValue().getPrior();
-              if (prior == null) {
-                return;
-              }
-              var storageSlots = collectStorageSlots(trieLog, address);
-              proofProvider
-                  .getAccountProof(worldView.getWorldStateRootHash(), address, storageSlots)
-                  .ifPresent(
-                      proof -> {
-                        proof
-                            .getAccountProof()
-                            .forEach(bytes -> resultSet.add(bytes.toHexString()));
-                        proof
-                            .getStorageKeys()
-                            .forEach(
-                                key ->
-                                    proof
-                                        .getStorageProof(key)
-                                        .forEach(bytes -> resultSet.add(bytes.toHexString())));
-                      });
+            (address, __) -> {
+              updater.getAccount(address);
+              trieLog
+                  .getStorageChanges(address)
+                  .forEach(
+                      ((storageSlotKey, ___) -> {
+                        updater.getStorageValue(address, storageSlotKey.getSlotKey().orElseThrow());
+                      }));
             });
+    // apply update
+    updater.rollForward(trieLog);
+    updater.commit();
+    worldState.persist(convertPluginBlockHeader(blockHeader, new MainnetBlockHeaderFunctions()));
 
-    return List.copyOf(resultSet);
+    final List<String> trieNodes =
+        bonsaiWorldStateLayerStorage.getTrieNodes().stream().map(Bytes::toHexString).toList();
+
+    return List.copyOf(trieNodes);
   }
 
   public List<String> buildKeys(final TrieLog trieLog) {
