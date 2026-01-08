@@ -228,6 +228,7 @@ dependencies {
     compileOnly 'org.hyperledger.besu.internal:besu-ethereum-core'
     compileOnly 'org.hyperledger.besu.internal:besu-ethereum-api'
     compileOnly 'org.hyperledger.besu:besu-evm'
+    compileOnly 'org.hyperledger.besu.internal:besu-services-kvstore'
 
     testImplementation 'io.vertx:vertx-web'
     testImplementation 'com.fasterxml.jackson.core:jackson-databind'
