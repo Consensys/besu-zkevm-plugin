@@ -99,7 +99,7 @@ public class ExecutionWitnessService {
         .flatMap(
             address ->
                 Stream.concat(
-                    Stream.of(address.toHexString()),
+                    Stream.of(address.getBytes().toHexString()),
                     collectStorageSlots(trieLog, address).stream().map(Bytes::toHexString)))
         .distinct()
         .toList();

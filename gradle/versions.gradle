@@ -14,9 +14,6 @@
  */
 
 dependencyManagement {
-    imports {
-        mavenBom "org.hyperledger.besu:bom:${besuVersion}"
-    }
     dependencies {
         // Error prone dependencies
         dependencySet(group: 'com.google.errorprone', version: '2.28.0') {
