@@ -36,6 +36,7 @@ import org.hyperledger.besu.ethereum.trie.pathbased.bonsai.worldview.BonsaiWorld
 import org.hyperledger.besu.ethereum.trie.pathbased.common.trielog.NoOpTrieLogManager;
 import org.hyperledger.besu.ethereum.trie.pathbased.common.worldview.WorldStateConfig;
 import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
 import org.hyperledger.besu.plugin.data.BlockHeader;
 import org.hyperledger.besu.plugin.services.BlockchainService;
 import org.hyperledger.besu.plugin.services.rlp.RlpConverterService;
@@ -56,7 +57,8 @@ public class ExecutionWitnessService {
       final BlockHeader blockHeader, final TrieLog trieLog, final BonsaiWorldState worldView) {
 
     final BonsaiWorldStateWitnessStorage bonsaiWorldStateLayerStorage =
-        new BonsaiWorldStateWitnessStorage(worldView.getWorldStateStorage());
+        new BonsaiWorldStateWitnessStorage(
+            new NoOpMetricsSystem(), worldView.getWorldStateStorage());
     final CodeCache codeCache = new CodeCache();
     final BonsaiWorldState worldState =
         new BonsaiWorldState(
@@ -74,13 +76,13 @@ public class ExecutionWitnessService {
     trieLog
         .getAccountChanges()
         .forEach(
-            (address, __) -> {
+            (address, accountChanges) -> {
               updater.getAccount(address);
               trieLog
                   .getStorageChanges(address)
                   .forEach(
                       ((storageSlotKey, ___) -> {
-                        updater.getStorageValue(address, storageSlotKey.getSlotKey().orElseThrow());
+                        updater.getStorageValueByStorageSlotKey(address, storageSlotKey);
                       }));
             });
     // apply update
@@ -99,7 +101,7 @@ public class ExecutionWitnessService {
         .flatMap(
             address ->
                 Stream.concat(
-                    Stream.of(address.toHexString()),
+                    Stream.of(address.getBytes().toHexString()),
                     collectStorageSlots(trieLog, address).stream().map(Bytes::toHexString)))
         .distinct()
         .toList();
@@ -126,13 +128,14 @@ public class ExecutionWitnessService {
             Optional::isPresent,
             opt -> opt.flatMap(h -> blockchainService.getBlockHeaderByHash(h.getParentHash())))
         .flatMap(Optional::stream)
-        .limit(2)
+        .limit(256)
         .map(h -> rlpConverterService.buildRlpFromHeader(h).toHexString())
         .toList();
   }
 
   private List<UInt256> collectStorageSlots(final TrieLog trieLog, final Address address) {
     return trieLog.getStorageChanges(address).keySet().stream()
+        .filter(storageSlotKey -> storageSlotKey.getSlotKey().isPresent())
         .map(slotKey -> slotKey.getSlotKey().orElseThrow())
         .toList();
   }
